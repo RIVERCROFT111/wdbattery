@@ -9,6 +9,7 @@ import os
 import sys
 import time
 
+import levelmap
 import wdbattery as core
 
 KEYBOARD = (0x258A, 0x024F)
@@ -79,7 +80,8 @@ def read_state() -> dict:
     kb = best.get(kb_id)
     kb_lv = kb.level if kb and kb.ok() else None
     kb_ch = bool(kb and "充电" in kb.detail)
-    out["kb"] = (kb_id in present, _smooth("kb", kb_lv, reset=kb_ch), kb.detail if kb else "")
+    kb_raw = _smooth("kb", kb_lv, reset=kb_ch)
+    out["kb"] = (kb_id in present, levelmap.apply("kb", kb_raw), kb.detail if kb else "")
 
     # 鼠标：电量取无线通道（有线模式拿不到真实电量），detail 优先用有线通道的充电状态
     wl, wd = best.get(ms_wl), best.get(ms_wd)
@@ -90,7 +92,7 @@ def read_state() -> dict:
         detail = wl.detail if wl else ""
     out["ms"] = (
         (ms_wl in present) or (ms_wd in present),
-        _smooth("ms", level, reset="充电" in detail),
+        levelmap.apply("ms", _smooth("ms", level, reset="充电" in detail)),
         detail,
     )
     return out
@@ -129,6 +131,8 @@ def render(state: dict, note: str, last: str) -> str:
     rows.append(line("-"))
     rows.append(f"  {BLUE}[R]{RESET} 刷新   {BLUE}[C]{RESET} 诊断抓包   {BLUE}[B]{RESET} 蓝牙读取   {BLUE}[Q]{RESET} 退出")
     rows.append(line("-"))
+    rows.append(f"  {DIM}显示基准：键盘 {levelmap.describe('kb')}{RESET}")
+    rows.append(f"  {DIM}　　　　　鼠标 {levelmap.describe('ms')}{RESET}")
     rows.append(f"  {DIM}{note}{RESET}")
     rows.append(f"  {DIM}{last}{RESET}")
     return "\n".join(rows)
@@ -136,6 +140,8 @@ def render(state: dict, note: str, last: str) -> str:
 
 def main() -> None:
     once = "--once" in sys.argv
+    if "--raw" in sys.argv or os.environ.get("WDBATTERY_RAW") == "1":
+        levelmap.set_enabled(False)
     try:
         ctypes.windll.kernel32.SetConsoleOutputCP(65001)
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")

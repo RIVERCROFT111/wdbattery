@@ -34,3 +34,13 @@ github-upload/
 .idea/
 Thumbs.db
 desktop.ini
+
+# 用户电量校准配置（每个部署目录独立）
+levelmap.json
+
+# 用户电量校准配置（每个部署目录独立）
+levelmap.json
+# 调试用预览图
+tray_state_preview.png
+check_scale.png
+icon_schemes.png

@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 
+import levelmap
 import wdbattery as core
 
 # ── 开机自启（注册表 HKCU Run）────────────────────────────────
@@ -70,11 +71,19 @@ def _smooth(tag: str, level: int | None, reset: bool = False) -> int | None:
         hist.pop(0)
     return sorted(hist)[len(hist) // 2]
 
+
+# 最近一次平滑后的原始固件读数（未经满电基准缩放），供"校准"菜单使用
+_RAW: dict[str, int | None] = {"kb": None, "ms": None}
+# 上一轮的充电状态，用来捕捉"刚拔线"这一刻（此时电量最接近满值）
+_PREV_CHARGING: dict[str, bool] = {"kb": False, "ms": False}
+
+
 def read_both() -> dict:
     """返回 {'kb': (level|None, charging, present), 'ms': (...)}。
 
     鼠标插线充电时会切到有线形态（A8A4），接收器通道的电量随之冻结。
     因此电量优先取无线通道，充电状态由无线/有线任一通道判定。
+    level 是经过满电基准缩放后的显示值（见 levelmap.py）。
     """
     kb_id = (0x258A, 0x024F)
     ms_wl, ms_wd = core.GM_WIRELESS, core.GM_WIRED
@@ -94,14 +103,24 @@ def read_both() -> dict:
 
     out = {}
     kb_lv, kb_ch = pack(best.get(kb_id))
-    out["kb"] = (_smooth("kb", kb_lv, reset=kb_ch), kb_ch, kb_id in present)
+    kb_raw = _smooth("kb", kb_lv, reset=kb_ch)
 
     lv_wl, ch_wl = pack(best.get(ms_wl))
     lv_wd, ch_wd = pack(best.get(ms_wd))
     level = lv_wl if lv_wl is not None else lv_wd
     charging = ch_wl or ch_wd
     # 充电状态跳变时清空历史，避免插拔瞬间的读数污染中位数
-    out["ms"] = (_smooth("ms", level, reset=charging), charging, (ms_wl in present) or (ms_wd in present))
+    ms_raw = _smooth("ms", level, reset=charging)
+
+    # 刚拔线的这一刻电量最接近满值，自动把它记为满电基准（下一次充得更满会自动上移）
+    for tag, raw, ch in (("kb", kb_raw, kb_ch), ("ms", ms_raw, charging)):
+        if _PREV_CHARGING.get(tag) and not ch and raw:
+            levelmap.set_anchor(tag, raw)
+        _PREV_CHARGING[tag] = ch
+
+    _RAW["kb"], _RAW["ms"] = kb_raw, ms_raw
+    out["kb"] = (levelmap.apply("kb", kb_raw), kb_ch, kb_id in present)
+    out["ms"] = (levelmap.apply("ms", ms_raw), charging, (ms_wl in present) or (ms_wd in present))
     return out
 
 
@@ -183,8 +202,14 @@ def tooltip(state: dict) -> str:
 # ── 托盘主程序 ────────────────────────────────────────────────
 
 def main() -> None:
+    import os
+
     import pystray
     from PIL import Image
+
+    # --raw（或 WDBATTERY_RAW=1）时直接显示固件原始读数，不做满电基准缩放
+    if "--raw" in sys.argv or os.environ.get("WDBATTERY_RAW") == "1":
+        levelmap.set_enabled(False)
 
     if "--smoke" in sys.argv:
         state = read_both()
@@ -242,10 +267,35 @@ def main() -> None:
     def quit_app(icon, item) -> None:
         icon.stop()
 
+    # ── 满电基准校准 ──────────────────────────────────────
+    def calibrate(tag: str) -> None:
+        """把当前原始读数记为 100% 基准（充满电时点一次最准）。"""
+        read_both()  # 刷新 _RAW
+        raw = _RAW.get(tag)
+        if raw:
+            levelmap.set_anchor(tag, raw)
+        apply(read_both())
+
+    def toggle_raw(icon, item) -> None:
+        levelmap.set_enabled(not item.checked)
+        apply(read_both())
+
     icon.menu = pystray.Menu(
         pystray.MenuItem("刷新", refresh, default=True),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("开机自启", toggle_autostart, checked=lambda item: is_autostart()),
+        pystray.MenuItem(
+            "电量校准",
+            pystray.Menu(
+                pystray.MenuItem("以当前键盘读数为满电基准", lambda i, it: calibrate("kb"),
+                                 enabled=lambda it: _RAW.get("kb") is not None),
+                pystray.MenuItem("以当前鼠标读数为满电基准", lambda i, it: calibrate("ms"),
+                                 enabled=lambda it: _RAW.get("ms") is not None),
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem("显示固件原始读数", toggle_raw,
+                                 checked=lambda item: not levelmap.load()["enabled"]),
+            ),
+        ),
         pystray.MenuItem("打开主窗口", open_console),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("退出", quit_app),
