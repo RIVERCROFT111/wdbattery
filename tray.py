@@ -205,11 +205,15 @@ def main() -> None:
         import os
 
         if getattr(sys, "frozen", False):
-            target = os.path.join(os.path.dirname(sys.executable), "键鼠电量.exe")
+            base = os.path.dirname(sys.executable)
         else:
-            target = os.path.join(os.path.dirname(os.path.abspath(__file__)), "键鼠电量v2", "键鼠电量.exe")
-        if os.path.exists(target):
-            os.startfile(target)
+            base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "键鼠电量v2")
+        # 控制台版是独立的 onedir 包，放在子目录里各自带 _internal
+        for rel in ("控制台版/键鼠电量.exe", "键鼠电量.exe"):
+            target = os.path.join(base, rel.replace("/", os.sep))
+            if os.path.exists(target):
+                os.startfile(target)
+                return
 
     def quit_app(icon, item) -> None:
         icon.stop()

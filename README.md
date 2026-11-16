@@ -68,12 +68,21 @@ Windows 下读取 **2.4G 无线接收器** 后面那把键盘和那只鼠标的*
 
 ### 直接下载 exe
 
-到 [Releases](../../releases) 下载 `wdbattery-win64.zip`，解压后双击：
+到 [Releases](../../releases) 下载 `wdbattery-win64.zip`，解压后：
 
-- `键鼠电量托盘.exe` — 常驻托盘，右键菜单可开关开机自启
-- `键鼠电量.exe` — 控制台界面
+```
+键鼠电量v2/
+├─ 键鼠电量托盘.exe      ← 常驻托盘（推荐，双击这个）
+├─ _internal/            ← 托盘版的依赖，必须一起保留
+└─ 控制台版/
+   ├─ 键鼠电量.exe       ← 控制台界面
+   └─ _internal/
+```
 
-exe 是 PyInstaller onedir 打包，**整个文件夹一起解压**，不要只拿 exe 出来。
+- `键鼠电量托盘.exe` — 常驻托盘，右键菜单可开关开机自启、打开控制台版
+- `控制台版/键鼠电量.exe` — 控制台界面，30 秒自动刷新
+
+exe 是 PyInstaller onedir 打包，**整个文件夹一起解压**，不要只拿 exe 出来；两个程序各自带 `_internal`，不可互相替换。
 
 ### 从源码跑
 
