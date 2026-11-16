@@ -49,20 +49,29 @@ def pad(text: str, width: int) -> str:
 
 
 def read_state() -> dict:
+    kb_id = (0x258A, 0x024F)
+    ms_wl, ms_wd = core.GM_WIRELESS, core.GM_WIRED
     ifaces = core.enumerate_ifaces()
     present = {(i.vid, i.pid) for i in ifaces}
-    readings = core.read_24g(ifaces, verbose=False, only_primary=True, deadline=0.35)
+    readings = core.read_24g(ifaces, verbose=False, only_primary=True, deadline=0.5)
     best: dict = {}
     for r in readings:
         key = (r.vid, r.pid)
         if r.ok() or key not in best:
             best[key] = r
+
     out = {}
-    for key, tag in ((KEYBOARD, "kb"), (MOUSE, "ms")):
-        r = best.get(key)
-        level = r.level if r and r.ok() else None
-        detail = r.detail if r else ""
-        out[tag] = (key in present, level, detail)
+    kb = best.get(kb_id)
+    out["kb"] = (kb_id in present, kb.level if kb and kb.ok() else None, kb.detail if kb else "")
+
+    # 鼠标：电量取无线通道（有线模式拿不到真实电量），detail 优先用有线通道的充电状态
+    wl, wd = best.get(ms_wl), best.get(ms_wd)
+    level = wl.level if wl and wl.ok() else (wd.level if wd and wd.ok() else None)
+    if wd is not None and wd.raw:
+        detail = wd.detail
+    else:
+        detail = wl.detail if wl else ""
+    out["ms"] = ((ms_wl in present) or (ms_wd in present), level, detail)
     return out
 
 

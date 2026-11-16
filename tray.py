@@ -56,22 +56,34 @@ def set_autostart(enable: bool) -> None:
 # ── 状态读取 ──────────────────────────────────────────────────
 
 def read_both() -> dict:
-    """返回 {'kb': (level|None, charging, present), 'ms': (...)}。"""
-    kb_id, ms_id = (0x258A, 0x024F), (0xA8A5, 0x2255)
+    """返回 {'kb': (level|None, charging, present), 'ms': (...)}。
+
+    鼠标插线充电时会切到有线形态（A8A4），接收器通道的电量随之冻结。
+    因此电量优先取无线通道，充电状态由无线/有线任一通道判定。
+    """
+    kb_id = (0x258A, 0x024F)
+    ms_wl, ms_wd = core.GM_WIRELESS, core.GM_WIRED
     ifaces = core.enumerate_ifaces()
     present = {(i.vid, i.pid) for i in ifaces}
-    readings = core.read_24g(ifaces, verbose=False, only_primary=True, deadline=0.35)
+    readings = core.read_24g(ifaces, verbose=False, only_primary=True, deadline=0.5)
     best: dict = {}
     for r in readings:
         key = (r.vid, r.pid)
         if r.ok() or key not in best:
             best[key] = r
-    out = {}
-    for key, tag in ((kb_id, "kb"), (ms_id, "ms")):
-        r = best.get(key)
+
+    def pack(r):
         level = r.level if r and r.ok() else None
         charging = bool(r and (getattr(r, "charging", False) or "充电" in r.detail))
-        out[tag] = (level, charging, key in present)
+        return level, charging
+
+    out = {}
+    out["kb"] = (*pack(best.get(kb_id)), kb_id in present)
+
+    lv_wl, ch_wl = pack(best.get(ms_wl))
+    lv_wd, ch_wd = pack(best.get(ms_wd))
+    level = lv_wl if lv_wl is not None else lv_wd
+    out["ms"] = (level, ch_wl or ch_wd, (ms_wl in present) or (ms_wd in present))
     return out
 
 
@@ -135,10 +147,13 @@ def tooltip(state: dict) -> str:
         if not present:
             parts.append(f"{name} 未连接")
         elif level is None:
-            parts.append(f"{name} --")
+            parts.append(f"{name} --" + ("（充电中）" if charging else ""))
         else:
             parts.append(f"{name} {level}%" + ("⚡充电中" if charging else ""))
-    return "键鼠电量\n" + " | ".join(parts)
+    text = "键鼠电量\n" + " | ".join(parts)
+    if state["ms"][1]:
+        text += "\n鼠标充电时固件不更新电量读数"
+    return text
 
 
 # ── 托盘主程序 ────────────────────────────────────────────────

@@ -32,7 +32,13 @@ except ImportError:
 DEVICES = {
     (0x258A, 0x024F): "VGN V98Pro V3 2.4G Dongle",
     (0xA8A5, 0x2255): "狼蛛 SC620 USB Receiver",
+    (0xA8A4, 0x2255): "狼蛛 SC620（有线模式·鼠标本体）",
 }
+
+# 鼠标插线充电时会从无线接收器（A8A5）切到有线 USB 设备（A8A4），
+# 两者 PID 只差最高位，是同一只鼠标的两种枚举形态。
+GM_WIRELESS = (0xA8A5, 0x2255)
+GM_WIRED = (0xA8A4, 0x2255)
 
 OTHER_VID = {
     0x05AC: "AULA F75 Max 接收器（quirk VID）",
@@ -292,6 +298,49 @@ def parse_gmouse(buf: bytes) -> tuple[int | None, bool]:
     return None, charging
 
 
+def read_gmouse_wired(dev) -> Reading:
+    """有线模式（鼠标本体 A8A4:2255）——只能确认"正在充电"，拿不到新电量。
+
+    实机标定（SC620 插线后）：
+      - 鼠标从无线形态（A8A5）切到有线形态（A8A4），接收器通道的电量随即冻结
+      - 有线通道对任意子命令都回同一帧 `AA 30 A5 72 0A 01 01 01 64 01`，
+        电量字节恒为 0x64(100)，是就绪占位而非真实电量
+      - status 0x72 & 0x30 仍可判充电
+    因此本函数只回报"充电中/有线在线"，不回报电量（level 保持 None）。
+    """
+    r = Reading(name="狼蛛 SC620（有线模式）", source="USB 有线 HID", vid=0xA8A4, pid=0x2255)
+    drain(dev)
+    frame = bytearray(65)
+    frame[0] = 0x00
+    for idx, b in enumerate((0x55, 0x30, 0xA5, 0x0B, 0x2E, 0x01, 0x01, 0x01)):
+        frame[1 + idx] = b
+    try:
+        dev.write(bytes(frame))
+    except OSError as e:
+        r.detail = f"写入失败：{e}"
+        return r
+    end = time.monotonic() + 1.0
+    while time.monotonic() < end:
+        try:
+            data = dev.read(64, 100)
+        except OSError:
+            break
+        if not data:
+            continue
+        raw = bytes(data)
+        r.raw.append(hexs(raw))
+        pct, charging = parse_gmouse(raw)
+        if pct is not None:
+            r.charging = charging
+            r.detail = "有线模式 · 充电中" if charging else "有线模式"
+            # 0x64 是固件占位值，采信它会让界面显示假满电
+            if pct < 100:
+                r.level = pct
+            return r
+    r.detail = "有线模式无应答"
+    return r
+
+
 def try_frame(dev, frame: bytes, deadline: float = 1.0) -> tuple[int | None, bytes | None]:
     drain(dev)
     try:
@@ -330,7 +379,11 @@ def read_24g(
             i
             for i in targets
             if (i.vid, i.pid, i.usage_page, i.usage)
-            in {(0x258A, 0x024F, 0xFF02, 0x0002), (0xA8A5, 0x2255, 0xFF01, 0x0010)}
+            in {
+                (0x258A, 0x024F, 0xFF02, 0x0002),
+                (0xA8A5, 0x2255, 0xFF01, 0x0010),
+                (0xA8A4, 0x2255, 0xFF01, 0x0010),
+            }
         ]
     if not targets:
         return results
@@ -370,7 +423,9 @@ def read_24g(
             continue
         try:
             # 狼蛛 SC620（A8A5:2255）走 0xFF01/0x0010 通道：0x06 命令，应答帧头 AA FA A5
-            if (i.vid, i.pid) == (0xA8A5, 0x2255) and i.usage_page == 0xFF01:
+            if (i.vid, i.pid) == GM_WIRED and (i.usage_page, i.usage) == (0xFF01, 0x0010):
+                r = read_gmouse_wired(dev)
+            elif (i.vid, i.pid) == (0xA8A5, 0x2255) and i.usage_page == 0xFF01:
                 r = read_aula_mouse(dev, i)
             else:
                 r = Reading(name=i.label, source="2.4G HID 私有协议", vid=i.vid, pid=i.pid)
