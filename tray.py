@@ -55,6 +55,21 @@ def set_autostart(enable: bool) -> None:
 
 # ── 状态读取 ──────────────────────────────────────────────────
 
+# 电量读数来自设备固件的电压估算，本身有 ±2~3% 抖动（换过大容量电池后更明显）。
+# 用最近 3 次的中位数做平滑，避免托盘数字来回跳。
+_HIST: dict[str, list[int]] = {"kb": [], "ms": []}
+
+
+def _smooth(tag: str, level: int | None, reset: bool = False) -> int | None:
+    hist = _HIST[tag]
+    if reset or level is None:
+        hist.clear()
+        return level
+    hist.append(level)
+    if len(hist) > 3:
+        hist.pop(0)
+    return sorted(hist)[len(hist) // 2]
+
 def read_both() -> dict:
     """返回 {'kb': (level|None, charging, present), 'ms': (...)}。
 
@@ -78,12 +93,15 @@ def read_both() -> dict:
         return level, charging
 
     out = {}
-    out["kb"] = (*pack(best.get(kb_id)), kb_id in present)
+    kb_lv, kb_ch = pack(best.get(kb_id))
+    out["kb"] = (_smooth("kb", kb_lv, reset=kb_ch), kb_ch, kb_id in present)
 
     lv_wl, ch_wl = pack(best.get(ms_wl))
     lv_wd, ch_wd = pack(best.get(ms_wd))
     level = lv_wl if lv_wl is not None else lv_wd
-    out["ms"] = (level, ch_wl or ch_wd, (ms_wl in present) or (ms_wd in present))
+    charging = ch_wl or ch_wd
+    # 充电状态跳变时清空历史，避免插拔瞬间的读数污染中位数
+    out["ms"] = (_smooth("ms", level, reset=charging), charging, (ms_wl in present) or (ms_wd in present))
     return out
 
 

@@ -48,6 +48,21 @@ def pad(text: str, width: int) -> str:
     return text + " " * max(0, width - disp)
 
 
+_HIST: dict[str, list[int]] = {"kb": [], "ms": []}
+
+
+def _smooth(tag: str, level: int | None, reset: bool = False) -> int | None:
+    """电量来自固件电压估算，有 ±2~3% 抖动（改装大容量电池后更明显），取最近 3 次中位数。"""
+    hist = _HIST[tag]
+    if reset or level is None:
+        hist.clear()
+        return level
+    hist.append(level)
+    if len(hist) > 3:
+        hist.pop(0)
+    return sorted(hist)[len(hist) // 2]
+
+
 def read_state() -> dict:
     kb_id = (0x258A, 0x024F)
     ms_wl, ms_wd = core.GM_WIRELESS, core.GM_WIRED
@@ -62,7 +77,9 @@ def read_state() -> dict:
 
     out = {}
     kb = best.get(kb_id)
-    out["kb"] = (kb_id in present, kb.level if kb and kb.ok() else None, kb.detail if kb else "")
+    kb_lv = kb.level if kb and kb.ok() else None
+    kb_ch = bool(kb and "充电" in kb.detail)
+    out["kb"] = (kb_id in present, _smooth("kb", kb_lv, reset=kb_ch), kb.detail if kb else "")
 
     # 鼠标：电量取无线通道（有线模式拿不到真实电量），detail 优先用有线通道的充电状态
     wl, wd = best.get(ms_wl), best.get(ms_wd)
@@ -71,7 +88,11 @@ def read_state() -> dict:
         detail = wd.detail
     else:
         detail = wl.detail if wl else ""
-    out["ms"] = ((ms_wl in present) or (ms_wd in present), level, detail)
+    out["ms"] = (
+        (ms_wl in present) or (ms_wd in present),
+        _smooth("ms", level, reset="充电" in detail),
+        detail,
+    )
     return out
 
 
