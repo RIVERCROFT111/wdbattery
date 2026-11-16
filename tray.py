@@ -108,6 +108,7 @@ def read_both() -> dict:
     lv_wl, ch_wl = pack(best.get(ms_wl))
     lv_wd, ch_wd = pack(best.get(ms_wd))
     level = lv_wl if lv_wl is not None else lv_wd
+    # 充电/休眠已由 parse_gmouse 按位域区分（0x10=充电，0x20=休眠），这里直接采信
     charging = ch_wl or ch_wd
     # 充电状态跳变时清空历史，避免插拔瞬间的读数污染中位数
     ms_raw = _smooth("ms", level, reset=charging)

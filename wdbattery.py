@@ -239,7 +239,7 @@ def read_aula_mouse(dev, iface: Iface) -> Reading:
         00 55 30 A5 0B 2E 01 01 01 + 补零
     应答（64B 输入）：
         AA 30 A5 [status] 0A 01 01 01 [pct] ...
-          status = byte3：0x0B=电池供电 / 0x3B=充电中（& 0x30 判断）
+          status = byte3：0x0B=待机 / 0x5E=充电中 / 0x63=休眠（见 parse_gmouse）
           pct    = byte8（0 为"未就绪"占位，不是真 0%）
     """
     r = Reading(name="狼蛛 SC620", source="2.4G HID 私有协议（Gmouse 0x30）", vid=0xA8A5, pid=0x2255)
@@ -263,23 +263,34 @@ def read_aula_mouse(dev, iface: Iface) -> Reading:
             continue
         raw = bytes(data)
         r.raw.append(hexs(raw))
-        pct, charging = parse_gmouse(raw)
+        pct, charging, sleeping = parse_gmouse(raw)
         if pct is not None:
             r.level = pct
             r.status = "ok"
             r.charging = charging
-            r.detail = "2.4G · 充电中" if charging else "2.4G"
+            if charging:
+                r.detail = "2.4G · 充电中"
+            elif sleeping:
+                r.detail = "2.4G · 休眠"
+            else:
+                r.detail = "2.4G"
             return r
     if not r.raw:
         r.detail = "静默无应答（鼠标可能休眠，移动鼠标后按 R 重试）"
     return r
 
 
-def parse_gmouse(buf: bytes) -> tuple[int | None, bool]:
-    """解析 Gmouse 应答 AA 30 ... → (电量%, 是否充电)。
+def parse_gmouse(buf: bytes) -> tuple[int | None, bool, bool]:
+    """解析 Gmouse 应答 AA 30 ... → (电量%, 是否充电, 是否休眠)。
 
-    实机 A/B 标定（SC620）：
-      - byte3 = 状态位域：0x0B=电池供电，0x3B=充电中（差异 0x30，bit4+bit5）
+    实机标定（SC620，2026-11-16 逐帧对照）：
+      - byte3 = 状态位域
+          bit4 (0x10) = 充电中      实测 0x5E / 0x72 均置位
+          bit5 (0x20) = 休眠        实测 0x63 置位，且此时电量字节保持最后一次值
+          0x0B = 电池供电待机（两个位都不置位）
+        注意：早期用 (status & 0x30) 判充电是错的——休眠的 0x63 含 bit5，
+        会把"鼠标睡了"误判成"正在充电"，托盘图标因此变青色。
+        0x3B 那种两位置位的情况仍按充电处理（bit4 优先）。
       - byte8 = 电量百分比（粗粒度电压换算，±5% 波动属正常）
       - byte9 = BrimDeck 标注的充电位，但 SC620 固件恒为 0，不可用
     电量 == 0 是"应答未就绪"占位，不算有效读数。
@@ -290,12 +301,14 @@ def parse_gmouse(buf: bytes) -> tuple[int | None, bool]:
     elif len(buf) > 11 and buf[1] == 0xAA and buf[2] == 0x30:
         at = 1
     if at < 0:
-        return None, False
+        return None, False, False
     pct = buf[at + 8]
-    charging = bool(buf[at + 3] & 0x30)
+    status = buf[at + 3]
+    charging = bool(status & 0x10)
+    sleeping = bool(status & 0x20) and not charging
     if 1 <= pct <= 100:
-        return pct, charging
-    return None, charging
+        return pct, charging, sleeping
+    return None, charging, sleeping
 
 
 def read_gmouse_wired(dev) -> Reading:
@@ -305,7 +318,7 @@ def read_gmouse_wired(dev) -> Reading:
       - 鼠标从无线形态（A8A5）切到有线形态（A8A4），接收器通道的电量随即冻结
       - 有线通道对任意子命令都回同一帧 `AA 30 A5 72 0A 01 01 01 64 01`，
         电量字节恒为 0x64(100)，是就绪占位而非真实电量
-      - status 0x72 & 0x30 仍可判充电
+      - status 0x72 含 bit4，按充电处理
     因此本函数只回报"充电中/有线在线"，不回报电量（level 保持 None）。
     """
     r = Reading(name="狼蛛 SC620（有线模式）", source="USB 有线 HID", vid=0xA8A4, pid=0x2255)
@@ -329,10 +342,15 @@ def read_gmouse_wired(dev) -> Reading:
             continue
         raw = bytes(data)
         r.raw.append(hexs(raw))
-        pct, charging = parse_gmouse(raw)
+        pct, charging, sleeping = parse_gmouse(raw)
         if pct is not None:
             r.charging = charging
-            r.detail = "有线模式 · 充电中" if charging else "有线模式"
+            if charging:
+                r.detail = "有线模式 · 充电中"
+            elif sleeping:
+                r.detail = "有线模式 · 休眠"
+            else:
+                r.detail = "有线模式"
             # 0x64 是固件占位值，采信它会让界面显示假满电
             if pct < 100:
                 r.level = pct
