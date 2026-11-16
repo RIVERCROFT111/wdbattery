@@ -91,6 +91,11 @@ def render(state: dict, note: str, last: str) -> str:
                 status, color, value = "深度休眠 · 晃动鼠标后按 R 重试", AMBER, "--"
             else:
                 status, color, value = "接收器在线 · 电量协议未标定", AMBER, "--"
+        elif "充电" in detail:
+            # 充电期间固件不刷新电量，只报状态不报数字（拔线后自动恢复读数）
+            color = BLUE
+            where = "USB 有线" if "有线" in detail else "2.4G"
+            status, value = f"{where} · 充电中", "充电中"
         else:
             color = GREEN if level >= 60 else AMBER if level >= 25 else RED
             extra = f" · {detail}" if detail else ""

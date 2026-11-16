@@ -128,12 +128,18 @@ def dual_icon(kb: tuple, ms: tuple) -> "Image":
         return int(round(v * 2))
 
     for (level, charging, present), x0 in ((kb, 24), (ms, 70)):
-        if not present or level is None:
-            h = u(6)  # 灰色矮桩表示离线/未知
-            color = COLOR_OFF
+        if not present:
+            h, color = u(6), COLOR_OFF
+        elif charging:
+            # 充电中一律青色；有最后读数按它画，没有就画中等高度表示"供电中"
+            base = level if level is not None else 55
+            h = max(u(20), u(104 * min(base, 100) / 100))
+            color = COLOR_CHARGE
+        elif level is None:
+            h, color = u(6), COLOR_OFF
         else:
             h = max(u(6), u(104 * min(level, 100) / 100))
-            color = _bar_color(level, charging)
+            color = cfor(level)
         d.rounded_rectangle([u(x0), u(116) - h, u(x0 + 34), u(116)], radius=u(6), fill=color)
     return img
 
@@ -146,14 +152,14 @@ def tooltip(state: dict) -> str:
         name = label[tag]
         if not present:
             parts.append(f"{name} 未连接")
+        elif charging:
+            # 充电期间固件不刷新电量，与其显示冻结的旧数字，不如只说"充电中"
+            parts.append(f"{name} 充电中")
         elif level is None:
-            parts.append(f"{name} --" + ("（充电中）" if charging else ""))
+            parts.append(f"{name} --")
         else:
-            parts.append(f"{name} {level}%" + ("⚡充电中" if charging else ""))
-    text = "键鼠电量\n" + " | ".join(parts)
-    if state["ms"][1]:
-        text += "\n鼠标充电时固件不更新电量读数"
-    return text
+            parts.append(f"{name} {level}%")
+    return "键鼠电量\n" + " | ".join(parts)
 
 
 # ── 托盘主程序 ────────────────────────────────────────────────
