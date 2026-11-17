@@ -90,9 +90,14 @@ def read_state() -> dict:
         detail = wd.detail
     else:
         detail = wl.detail if wl else ""
+    # 真在充电必然插着线（有线形态 A8A4 在线）；休眠状态字节五花八门，
+    # 不排除带充电位 bit4 的形态，单看位域会把"睡着"误判成"充电中"
+    wired_present = ms_wd in present
+    if "充电" in detail and not wired_present:
+        detail = detail.replace(" · 充电中", "").replace("充电中", "2.4G")
     out["ms"] = (
-        (ms_wl in present) or (ms_wd in present),
-        levelmap.apply("ms", _smooth("ms", level, reset="充电" in detail)),
+        (ms_wl in present) or wired_present,
+        levelmap.apply("ms", _smooth("ms", level, reset="充电" in detail and wired_present)),
         detail,
     )
     return out

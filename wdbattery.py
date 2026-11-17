@@ -268,6 +268,7 @@ def read_aula_mouse(dev, iface: Iface) -> Reading:
             r.level = pct
             r.status = "ok"
             r.charging = charging
+            r.sleeping = sleeping
             if charging:
                 r.detail = "2.4G · 充电中"
             elif sleeping:
@@ -345,6 +346,7 @@ def read_gmouse_wired(dev) -> Reading:
         pct, charging, sleeping = parse_gmouse(raw)
         if pct is not None:
             r.charging = charging
+            r.sleeping = sleeping
             if charging:
                 r.detail = "有线模式 · 充电中"
             elif sleeping:

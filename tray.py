@@ -99,17 +99,22 @@ def read_both() -> dict:
     def pack(r):
         level = r.level if r and r.ok() else None
         charging = bool(r and (getattr(r, "charging", False) or "充电" in r.detail))
-        return level, charging
+        sleeping = bool(r and getattr(r, "sleeping", False))
+        return level, charging, sleeping
 
     out = {}
-    kb_lv, kb_ch = pack(best.get(kb_id))
+    kb_lv, kb_ch, _ = pack(best.get(kb_id))
     kb_raw = _smooth("kb", kb_lv, reset=kb_ch)
 
-    lv_wl, ch_wl = pack(best.get(ms_wl))
-    lv_wd, ch_wd = pack(best.get(ms_wd))
+    lv_wl, ch_wl, sl_wl = pack(best.get(ms_wl))
+    lv_wd, ch_wd, sl_wd = pack(best.get(ms_wd))
     level = lv_wl if lv_wl is not None else lv_wd
-    # 充电/休眠已由 parse_gmouse 按位域区分（0x10=充电，0x20=休眠），这里直接采信
-    charging = ch_wl or ch_wd
+    wired_present = ms_wd in present
+    # 真在充电必然插着线，而插线后鼠标必以有线形态（A8A4）枚举出来。
+    # 位域只作参考：休眠状态字节五花八门（实测 0x0B / 0x61 / 0x63），
+    # 不排除某些休眠态带充电位 bit4，单看位域会重演"睡着被当成充电"。
+    charging = (ch_wl or ch_wd) and wired_present
+    sleeping = (sl_wl or sl_wd) and not charging
     # 充电状态跳变时清空历史，避免插拔瞬间的读数污染中位数
     ms_raw = _smooth("ms", level, reset=charging)
 
@@ -120,8 +125,8 @@ def read_both() -> dict:
         _PREV_CHARGING[tag] = ch
 
     _RAW["kb"], _RAW["ms"] = kb_raw, ms_raw
-    out["kb"] = (levelmap.apply("kb", kb_raw), kb_ch, kb_id in present)
-    out["ms"] = (levelmap.apply("ms", ms_raw), charging, (ms_wl in present) or (ms_wd in present))
+    out["kb"] = (levelmap.apply("kb", kb_raw), kb_ch, kb_id in present, False)
+    out["ms"] = (levelmap.apply("ms", ms_raw), charging, (ms_wl in present) or wired_present, sleeping)
     return out
 
 
@@ -165,7 +170,7 @@ def dual_icon(kb: tuple, ms: tuple) -> "Image":
     def u(v: float) -> int:
         return int(round(v * 2))
 
-    for (level, charging, present), x0 in ((kb, 24), (ms, 70)):
+    for (level, charging, present, _sleeping), x0 in ((kb, 24), (ms, 70)):
         if not present:
             h, color = u(6), COLOR_OFF
         elif charging:
@@ -186,7 +191,7 @@ def tooltip(state: dict) -> str:
     parts = []
     label = {"kb": "键盘", "ms": "鼠标"}
     for tag in ("kb", "ms"):
-        level, charging, present = state[tag]
+        level, charging, present, sleeping = state[tag]
         name = label[tag]
         if not present:
             parts.append(f"{name} 未连接")
@@ -196,7 +201,7 @@ def tooltip(state: dict) -> str:
         elif level is None:
             parts.append(f"{name} --")
         else:
-            parts.append(f"{name} {level}%")
+            parts.append(f"{name} {level}%" + ("（休眠）" if sleeping else ""))
     return "键鼠电量\n" + " | ".join(parts)
 
 
@@ -218,7 +223,16 @@ def main() -> None:
             f.write(repr(state))
         return
 
-    state = read_both()
+    # 首次读取也放独立线程 + 超时，避免极端情况下启动即卡死在 HID 读上
+    box: dict = {}
+
+    def probe() -> None:
+        box["s"] = read_both()
+
+    _t = threading.Thread(target=probe, daemon=True)
+    _t.start()
+    _t.join(timeout=15)
+    state = box.get("s") or {"kb": (None, False, False, False), "ms": (None, False, False, False)}
     low_alerted = {"kb": False, "ms": False}
 
     icon = pystray.Icon(
@@ -302,12 +316,24 @@ def main() -> None:
         pystray.MenuItem("退出", quit_app),
     )
 
-    # 后台轮询线程：60 秒一刷
+    # 后台轮询线程：60 秒一刷。
+    # 每轮用独立线程 + 超时看门狗：万一 HID 读写卡死（设备休眠瞬间的偶发问题），
+    # 不会让整个轮询线程挂死、图标冻结在旧状态（比如一直显示"充电中"）。
     def worker() -> None:
         while True:
             time.sleep(60)
+            box: dict = {}
+
+            def probe() -> None:
+                box["s"] = read_both()
+
+            t = threading.Thread(target=probe, daemon=True)
+            t.start()
+            t.join(timeout=15)
+            if "s" not in box:
+                continue  # 本轮卡住/失败，丢弃，下一轮重试
             try:
-                apply(read_both())
+                apply(box["s"])
             except Exception:
                 pass
 
