@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """键鼠电量 — 托盘常驻版
 
-托盘图标显示电池状态（填充高度 = 电量，颜色分级），悬停提示双设备电量，
-菜单支持：刷新 / 开机自启开关 / 打开主窗口 / 退出。
+托盘图标是紫粉方圆底板上的两个圆圈（外环=键盘、内点=鼠标），颜色即状态；
+悬停提示显示双设备电量与充电/休眠状态，
+菜单支持：刷新 / 开机自启开关 / 电量校准 / 打开主窗口 / 退出。
 电量低于 20% 时弹一次气泡提醒。
 
 隐藏参数：--smoke  单次读取并写 smoke.txt 后退出（构建自检用）
@@ -131,21 +132,47 @@ def read_both() -> dict:
 
 
 # ── 图标绘制 ──────────────────────────────────────────────────
+#
+# 图标就是两个基本图形：一大一小两个圆套在一起（外环 + 内点），底板是紫粉方圆。
+#   外环 = 键盘   内点 = 鼠标
+# 颜色即状态：白=正常(≥60%) / 琥珀=25~59% / 红=<25% / 青=充电中 / 半透明白=离线未知
 
-COLOR_OK = (76, 175, 80, 255)     # 绿
-COLOR_MID = (255, 152, 0, 255)    # 琥珀
-COLOR_LOW = (244, 67, 54, 255)    # 红
-COLOR_OFF = (158, 158, 158, 255)  # 灰（未知/离线）
-COLOR_CHARGE = (0, 188, 212, 255)  # 青（充电中）
+COLOR_OK = (255, 255, 255, 255)     # 白（正常）
+COLOR_MID = (255, 209, 102, 255)    # 琥珀
+COLOR_LOW = (255, 69, 90, 255)      # 红
+COLOR_OFF = (255, 255, 255, 92)     # 半透明白（离线/未知）
+COLOR_CHARGE = (77, 225, 240, 255)  # 青（充电中）
+
+BG_TOP, BG_BOT = (156, 108, 255), (232, 92, 158)
+ICON_SIZE = 256
+_BASE_CACHE = None
 
 
-def _bar_color(level: int | None, charging: bool):
-    if charging:
-        return COLOR_CHARGE
-    return cfor(level)
+def _lerp(a, b, t):
+    return tuple(int(round(a[i] + (b[i] - a[i]) * t)) for i in range(3))
+
+
+def _badge_base():
+    """紫粉纵向渐变 + 圆角方形遮罩，缓存一份供每次复制。"""
+    global _BASE_CACHE
+    if _BASE_CACHE is None:
+        from PIL import Image, ImageDraw
+
+        S = ICON_SIZE
+        grad = Image.new("RGB", (S, S))
+        gd = ImageDraw.Draw(grad)
+        for y in range(S):
+            gd.line([0, y, S, y], fill=_lerp(BG_TOP, BG_BOT, y / (S - 1)))
+        mask = Image.new("L", (S, S), 0)
+        ImageDraw.Draw(mask).rounded_rectangle([14, 14, 242, 242], radius=58, fill=255)
+        base = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+        base.paste(grad.convert("RGBA"), (0, 0), mask)
+        _BASE_CACHE = base
+    return _BASE_CACHE.copy()
 
 
 def cfor(level: int | None):
+    """纯电量分级取色（离线/未知为半透明白）。"""
     if level is None:
         return COLOR_OFF
     if level >= 60:
@@ -155,35 +182,35 @@ def cfor(level: int | None):
     return COLOR_LOW
 
 
+def state_color(level: int | None, charging: bool, present: bool):
+    """单个设备的状态色：充电优先，其次离线，再按电量分级。"""
+    if charging:
+        return COLOR_CHARGE
+    if not present or level is None:
+        return COLOR_OFF
+    return cfor(level)
+
+
 def dual_icon(kb: tuple, ms: tuple) -> "Image":
-    """双竖柱图标：左柱=键盘，右柱=鼠标，柱高=电量。
+    """圆形图标：外环=键盘、内点=鼠标，只有两个基本图形。
 
-    每柱颜色：青=充电中，绿/琥珀/红=电量分级，灰=离线或未知。
-    kb/ms 均为 (level|None, charging, present)。
+    kb/ms 均为 (level|None, charging, present, sleeping)。
     """
-    from PIL import Image, ImageDraw
+    from PIL import ImageDraw
 
-    S = 256  # 128 单位坐标系 × 2
-    img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    img = _badge_base()
     d = ImageDraw.Draw(img)
 
-    def u(v: float) -> int:
-        return int(round(v * 2))
+    kb_level, kb_ch, kb_present = kb[0], kb[1], kb[2]
+    ms_level, ms_ch, ms_present = ms[0], ms[1], ms[2]
 
-    for (level, charging, present, _sleeping), x0 in ((kb, 24), (ms, 70)):
-        if not present:
-            h, color = u(6), COLOR_OFF
-        elif charging:
-            # 充电中一律青色；有最后读数按它画，没有就画中等高度表示"供电中"
-            base = level if level is not None else 55
-            h = max(u(20), u(104 * min(base, 100) / 100))
-            color = COLOR_CHARGE
-        elif level is None:
-            h, color = u(6), COLOR_OFF
-        else:
-            h = max(u(6), u(104 * min(level, 100) / 100))
-            color = cfor(level)
-        d.rounded_rectangle([u(x0), u(116) - h, u(x0 + 34), u(116)], radius=u(6), fill=color)
+    ring_color = state_color(kb_level, kb_ch, kb_present)
+    dot_color = state_color(ms_level, ms_ch, ms_present)
+
+    # 外环：r=88（直径 176），环宽 18
+    d.ellipse([40, 40, 216, 216], outline=ring_color, width=18)
+    # 内点：r=40（直径 80）
+    d.ellipse([88, 88, 168, 168], fill=dot_color)
     return img
 
 
